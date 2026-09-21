@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gesture Context Conversation Lab</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#071019;color:#eef8ff;font-family:system-ui,-apple-system,sans-serif;padding:22px}
+.wrap{max-width:1180px;margin:auto}.grid{display:grid;grid-template-columns:1.45fr .55fr;gap:16px}
+.card{background:#0e1b27;border:1px solid #29475e;border-radius:18px;padding:15px}
+.stage{position:relative;aspect-ratio:16/9;background:#020609;border-radius:14px;overflow:hidden}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+video{transform:scaleX(-1)} #overlay{pointer-events:none}
+.msg{position:absolute;left:12px;bottom:12px;background:#06111ddd;padding:9px 12px;border-radius:10px}
+.count{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:min(30vw,190px);font-weight:900;text-shadow:0 4px 30px #000}
+.flash{position:absolute;inset:0;background:white;opacity:0;pointer-events:none}
+.flash.go{animation:flash .35s}@keyframes flash{0%{opacity:0}35%{opacity:1}100%{opacity:0}}
+button{background:#6d75ff;color:white;border:0;border-radius:11px;padding:12px 16px;font-weight:800;cursor:pointer}
+button:disabled{opacity:.45}.status{font-weight:800;margin-left:10px}.ok{color:#6fe2a7}.bad{color:#ffcc72}
+.hero{text-align:center;font-size:64px;margin:10px}.name{text-align:center;font-size:24px;font-weight:850}.conf{text-align:center;color:#9bb1bf;margin-top:6px}
+.panel{margin-top:14px;padding:12px;border-radius:12px;background:#09131d;border:1px solid #203a4e}
+.label{font-size:11px;color:#8ba2b1;text-transform:uppercase;letter-spacing:.1em}.value{font-weight:800;margin-top:3px}
+.preview{width:100%;margin-top:10px;border-radius:12px;display:none;transform:scaleX(-1)}
+a.save{display:none;text-align:center;margin-top:10px;background:#203a4e;color:white;text-decoration:none;padding:10px;border-radius:10px;font-weight:800}
+.note{color:#9bb1bf;font-size:12px;line-height:1.55}.rule{border:0;border-top:1px solid #29475e;margin:18px 0}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style></head>
+<body><div class="wrap">
+<h1>Gesture Context Conversation Lab</h1>
+<p class="note">The same gesture can mean different things in different contexts. Watch the system interpret GESTURE → CONTEXT → INTENT → ACTION.</p>
+<div class="grid">
+<section class="card">
+<div class="stage">
+<video id="video" autoplay muted playsinline></video>
+<canvas id="overlay"></canvas>
+<div class="msg" id="msg">Initializing detector…</div>
+<div class="count" id="count">3</div><div class="flash" id="flash"></div>
+</div>
+<p><button id="start" disabled>Start Camera</button> <button id="test">Test Photo Flow</button><span class="status" id="status">LOADING</span></p><p class="note" id="debug">Debug: waiting</p>
+<p class="note">Teaching focus: gesture meaning is resolved by conversational state. The interface shows its interpretation in real time.</p>
+</section>
+<aside class="card">
+<div class="hero" id="emoji">🤚</div><div class="name" id="name">Waiting</div><div class="conf" id="conf">Confidence —</div>
+<div class="panel">
+  <div class="label">System Understanding</div>
+  <div style="display:grid;grid-template-columns:92px 1fr;gap:7px;margin-top:9px;font-size:13px">
+    <div class="label">Gesture</div><div class="value" id="underGesture">—</div>
+    <div class="label">Context</div><div class="value" id="underContext">READY</div>
+    <div class="label">Intent</div><div class="value" id="intent">Waiting</div>
+    <div class="label">Strategy</div><div class="value" id="strategy">WAIT</div>
+    <div class="label">Action</div><div class="value" id="action">None</div>
+  </div>
+</div>
+<div class="panel"><div class="label">Camera state</div><div class="value" id="camstate">Ready for request</div></div>
+<div class="panel">
+  <div class="label">Conversation</div>
+  <div id="conversation" style="margin-top:8px;max-height:180px;overflow:auto;font-size:13px;line-height:1.5">
+    <div>System: Show ✌️ when you want me to take a photo.</div>
+  </div>
+</div>
+
+<div class="panel">
+ <div class="label">Context changes meaning</div>
+ <div style="margin-top:8px;font-size:13px;line-height:1.7">
+   <b>READY:</b> ✌️ = Request photo<br>
+   <b>COUNTDOWN:</b> ✋ = Stop / Cancel<br>
+   <b>REVIEW:</b> 👍 = Keep &nbsp; • &nbsp; ✋ = Reject<br>
+   <b>CONFIRMED:</b> ✌️ = Take another photo
+ </div>
+</div>
+<hr class="rule">
+<div class="label">Last captured photo</div>
+<img id="preview" class="preview" alt="Captured webcam still">
+<a id="save" class="save" download="gesture-photo.jpg">Save Photo</a>
+<p class="note">Conversation flow: ✌️ requests a photo. ✋ cancels during countdown or rejects a captured photo. 👍 confirms and keeps the captured photo.</p>
+</aside></div>
+<canvas id="capture" hidden></canvas>
+</div>
+<script type="module">
+import { FilesetResolver, GestureRecognizer } from "./vision_bundle.mjs";
+const $=id=>document.getElementById(id);
+const video=$("video"), overlay=$("overlay"), ctx=overlay.getContext("2d"), capture=$("capture");
+let recognizer, running=false, lastVideoTime=-1;
+let armed=true, counting=false, lastGesture="", victorySince=0, openSince=0, thumbSince=0, cancelCountdown=false, photoPending=false, appContext="READY";
+
+function uiGesture(name,score){
+ const map={Open_Palm:["✋","OPEN PALM"],Victory:["✌️","V SIGN"],Thumb_Up:["👍","THUMBS UP"]};
+ const x=map[name];
+ if(!x){
+   $("emoji").textContent="🤚"; $("name").textContent="No clear gesture";
+   $("conf").textContent="Confidence —"; $("underGesture").textContent="—";
+   return;
+ }
+ $("emoji").textContent=x[0]; $("name").textContent=x[1]+" DETECTED";
+ $("conf").textContent="Confidence "+Math.round(score*100)+"%";
+ $("underGesture").textContent=x[1]+" ("+Math.round(score*100)+"%)";
+}
+function setUnderstanding(context,intent,strategy,action){
+ appContext=context;
+ $("underContext").textContent=context;
+ $("intent").textContent=intent;
+ $("strategy").textContent=strategy;
+ $("action").textContent=action;
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+
+function say(text){
+  if("speechSynthesis" in window){
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text);
+    u.rate=1; u.pitch=1;
+    speechSynthesis.speak(u);
+  }
+}
+function logTurn(who,text){
+  const box=$("conversation");
+  const d=document.createElement("div");
+  d.textContent=who+": "+text;
+  if(who==="System") d.style.color="#9fd8ff";
+  else d.style.color="#ffffff";
+  box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
+function systemResponse(text, speak=true){
+  logTurn("System",text);
+  $("msg").textContent=text;
+  if(speak) say(text);
+}
+function cancelAction(){
+  if(counting){
+    cancelCountdown=true;
+    $("count").style.display="none";
+    $("camstate").textContent="Cancelled — ready again";
+    setUnderstanding("READY","Stop current photo request","ACT","Cancel countdown");
+    systemResponse("Photo cancelled. Show the V sign when you are ready.");
+  } else if(photoPending){
+    photoPending=false;
+    $("preview").style.display="none";
+    $("save").style.display="none";
+    $("camstate").textContent="Rejected — ready again";
+    setUnderstanding("READY","Reject captured photo","ACT","Discard photo");
+    systemResponse("Photo discarded. Show the V sign when you are ready to try again.");
+  }
+}
+function confirmPhoto(){
+  if(!photoPending) return;
+  photoPending=false;
+  $("camstate").textContent="Confirmed";
+  $("save").style.display="block";
+  setUnderstanding("CONFIRMED","Accept captured photo","ACT","Keep photo");
+  systemResponse("Photo confirmed. You can save it now. Show the V sign if you want another photo.");
+}
+
+async function countdownAndPhoto(){
+ if(counting || photoPending)return;
+ counting=true; cancelCountdown=false; armed=false;
+ logTurn("User","✌️ V sign");
+ setUnderstanding("READY","Request a photo","ACT","Start countdown");
+ $("camstate").textContent="Countdown";
+ systemResponse("I understand the V sign as: take a photo. Taking it in three seconds.");
+ $("count").style.display="flex";
+ setUnderstanding("COUNTDOWN","Photo request active","WAIT / LISTEN","✋ can cancel");
+ for(const n of [3,2,1]){
+   if(cancelCountdown){ counting=false; armed=false; return; }
+   $("count").textContent=n;
+   await sleep(800);
+ }
+ if(cancelCountdown){ counting=false; armed=false; return; }
+ $("count").textContent="📸"; takePhoto(); await sleep(350); $("count").style.display="none";
+ $("camstate").textContent="Review photo";
+ counting=false; photoPending=true;
+ setUnderstanding("REVIEW","Awaiting user decision","ASK","👍 Keep or ✋ Reject");
+ systemResponse("Photo taken. In this context, thumbs up means keep it, and open palm means reject it.");
+}
+function takePhoto(){
+ capture.width=video.videoWidth; capture.height=video.videoHeight;
+ const c=capture.getContext("2d");
+ c.save(); c.translate(capture.width,0); c.scale(-1,1); c.drawImage(video,0,0,capture.width,capture.height); c.restore();
+ const url=capture.toDataURL("image/jpeg",0.92);
+ $("preview").src=url; $("preview").style.display="block"; $("save").href=url; $("save").style.display="none";
+ $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
+}
+async function init(){
+ try{
+  const vision=await FilesetResolver.forVisionTasks("./wasm");
+  recognizer=await GestureRecognizer.createFromOptions(vision,{baseOptions:{modelAssetPath:"./gesture_recognizer.task"},runningMode:"VIDEO",numHands:1});
+  $("start").disabled=false;$("status").textContent="DETECTOR READY";$("status").className="status ok";$("msg").textContent="Ready — press Start Camera";
+ }catch(e){$("status").textContent="LOAD FAILED";$("status").className="status bad";$("msg").textContent=e.message;}
+}
+async function startCamera(){
+ try{
+  const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+  video.srcObject=stream; await video.play(); running=true; $("start").disabled=true;$("status").textContent="CAMERA ON";$("camstate").textContent="Ready for request";setUnderstanding("READY","Waiting for request","WAIT","Show ✌️");$("msg").textContent="Show ✌️ to request a photo";systemResponse("Camera ready. Show the V sign when you want a photo.");requestAnimationFrame(loop);
+ }catch(e){$("status").textContent="CAMERA BLOCKED";$("status").className="status bad";$("msg").textContent=e.message;}
+}
+function loop(){
+ if(!running)return;
+ if(video.readyState>=2 && video.currentTime!==lastVideoTime){
+  lastVideoTime=video.currentTime; overlay.width=video.videoWidth;overlay.height=video.videoHeight;ctx.clearRect(0,0,overlay.width,overlay.height);
+  try{
+   const r=recognizer.recognizeForVideo(video,performance.now()), lm=r.landmarks?.[0], g=r.gestures?.[0]?.[0];
+   if(lm){ctx.fillStyle="#72e5a5";for(const p of lm){ctx.beginPath();ctx.arc((1-p.x)*overlay.width,p.y*overlay.height,4,0,Math.PI*2);ctx.fill();}}
+   if(g && g.score>=.55){
+    lastGesture=g.categoryName; uiGesture(g.categoryName,g.score); $("msg").textContent=g.categoryName.replaceAll("_"," ")+" • "+Math.round(g.score*100)+"%";
+    $("debug").textContent="Debug: category="+g.categoryName+" | score="+Math.round(g.score*100)+"% | context="+appContext;
+    const now=performance.now();
+
+    // Same physical gesture is interpreted through the current conversational state.
+    if(g.categoryName==="Victory"){
+      openSince=0; thumbSince=0;
+      if(!counting && !photoPending && armed){
+        if(!victorySince) victorySince=now;
+        if(now-victorySince>=350){
+          victorySince=0;
+          if(appContext==="CONFIRMED"){
+            logTurn("User","✌️ V sign");
+            setUnderstanding("CONFIRMED","Request another photo","ACT","Start new photo flow");
+            systemResponse("Another photo? Sure.");
+            setTimeout(()=>countdownAndPhoto(),250);
+          } else {
+            countdownAndPhoto();
+          }
+        }
+      } else {
+        setUnderstanding(appContext,"V sign has no action here","WAIT","Ignore until current turn ends");
+      }
+    } else if(g.categoryName==="Open_Palm"){
+      victorySince=0; thumbSince=0;
+      if(counting){
+        setUnderstanding("COUNTDOWN","Stop / cancel","ACT","Cancel countdown");
+        if(!openSince) openSince=now;
+        if(now-openSince>=300){ openSince=0; logTurn("User","✋ Open palm"); cancelAction(); }
+      } else if(photoPending){
+        setUnderstanding("REVIEW","Reject photo","ACT","Discard captured photo");
+        if(!openSince) openSince=now;
+        if(now-openSince>=300){ openSince=0; logTurn("User","✋ Open palm"); cancelAction(); }
+      } else {
+        setUnderstanding(appContext,"No active action to stop","WAIT","No action");
+      }
+    } else if(g.categoryName==="Thumb_Up"){
+      victorySince=0; openSince=0;
+      if(photoPending){
+        setUnderstanding("REVIEW","Accept photo","ACT","Keep captured photo");
+        if(!thumbSince) thumbSince=now;
+        if(now-thumbSince>=300){ thumbSince=0; logTurn("User","👍 Thumbs up"); confirmPhoto(); }
+      } else {
+        setUnderstanding(appContext,"Nothing to confirm","WAIT","No action");
+      }
+    } else {
+      victorySince=0; openSince=0; thumbSince=0;
+    }
+   }else{
+    lastGesture="";victorySince=0;openSince=0;thumbSince=0;if(!counting)armed=true;uiGesture("",0);if(!photoPending && appContext!=="CONFIRMED")$("msg").textContent="Show ✋, ✌️, or 👍";$("debug").textContent="Debug: no clear gesture | context="+appContext;
+   }
+  }catch(e){$("msg").textContent="Recognition error: "+e.message;}
+ }
+ requestAnimationFrame(loop);
+}
+$("start").onclick=startCamera; $("test").onclick=()=>{ if(video.readyState>=2 && !counting && !photoPending){ countdownAndPhoto(); } else if(video.readyState<2){ $("debug").textContent="Debug: start camera first"; } }; init();
+</script></body></html>
