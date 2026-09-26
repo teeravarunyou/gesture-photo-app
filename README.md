@@ -24,7 +24,7 @@ The system therefore considers both the detected gesture and the current convers
 
 ---
 
-![Alt text] (https://github.com/teeravarunyou/gesture-photo-app/blob/4308c65d2d72e21a4b87fa1587d711f5f5545383/gesture.jpg)
+![Gesture Context Conversation Lab](https://github.com/teeravarunyou/gesture-photo-app/blob/4308c65d2d72e21a4b87fa1587d711f5f5545383/gesture.jpg?raw=true)
 
 ## Interaction Flow
 
